@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Matrix Racing</title>
+    <style>
+        body { 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            height: 100vh; 
+            margin: 0; 
+            background-color: #1a1a2e; 
+            font-family: 'Arial', sans-serif;
+            overflow: hidden;
+        }
+        canvas { 
+            border: 4px solid #16213e; 
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        }
+        #startScreen {
+            position: absolute;
+            text-align: center;
+            color: white;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px;
+            border-radius: 10px;
+        }
+        .gameButton {
+            padding: 10px 20px;
+            font-size: 18px;
+            background-color: #0f3460;
+            color: white;
+            border: none;
+            cursor: pointer;
+            margin: 10px;
+            border-radius: 5px;
+        }
+        .gameButton:hover {
+            background-color: #1a5b9c;
+        }
+        .colorPickerContainer {
+            margin-top: 20px;
+            padding: 10px;
+        }
+        .playerSetup {
+            display: none;
+            margin-top: 15px;
+        }
+        .colorPicker {
+            margin: 10px;
+            padding: 5px;
+        }
+        #modeSelection {
+            margin-bottom: 20px;
+        }
+        .controls-info {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #cccccc;
+        }
+    </style>
+</head>
+<body>
+    <div id="startScreen">
+        <h1>Matrix Racing</h1>
+        
+        <div id="modeSelection">
+            <h2>Select Game Mode</h2>
+            <button class="gameButton" id="onePlayerButton">1 Player</button>
+            <button class="gameButton" id="twoPlayerButton">2 Players</button>
+        </div>
+        
+        <div id="onePlayerSetup" class="playerSetup">
+            <h2>Player Setup</h2>
+            <label for="player1ColorPicker">Choose your car color:</label>
+            <input type="color" id="player1ColorPicker" class="colorPicker" value="#0000FF">
+            <div class="controls-info">
+                Controls: Arrow keys to move between lanes
+            </div>
+            <br>
+            <button class="gameButton" id="startOnePlayerButton">Start Game</button>
+            <button class="gameButton" id="backButton1">Back</button>
+        </div>
+        
+        <div id="twoPlayerSetup" class="playerSetup">
+            <h2>Player Setup</h2>
+            <div>
+                <label for="player1ColorPicker2P">Player 1 car color:</label>
+                <input type="color" id="player1ColorPicker2P" class="colorPicker" value="#0000FF">
+                <div class="controls-info">Controls: Arrow keys (←→)</div>
+            </div>
+            <div>
+                <label for="player2ColorPicker">Player 2 car color:</label>
+                <input type="color" id="player2ColorPicker" class="colorPicker" value="#FF0000">
+                <div class="controls-info">Controls: A and D keys</div>
+            </div>
+            <button class="gameButton" id="startTwoPlayerButton">Start Game</button>
+            <button class="gameButton" id="backButton2">Back</button>
+        </div>
+    </div>
+    <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+    <script>
+        // Game configuration
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Game state
+        const game = {
+            isRunning: true,
+            score: 0,
+            speed: 5,
+            roadScroll: 0,
+            difficulty: 1,
+            lastEnemySpawn: 0,
+            debugMode: false, // Set to true to show collision boxes
+            gameMode: '1P', // '1P' or '2P'
+            winner: null
+        };
+
+        // Player car
+        const player1 = {
+            x: 400,
+            y: 500,
+            width: 50,
+            height: 80,
+            speed: 5,
+            shield: false,
+            speedBoost: false,
+            health: 100,
+            color: '#0000FF',
+            hitCooldown: 0,
+            isAlive: true,
+            score: 0,
+            lane: 1 // Middle lane (0, 1, 2)
+        };
+
+        // Player 2 car (for 2-player mode)
+        const player2 = {
+            x: 400,
+            y: 500,
+            width: 50,
+            height: 80,
+            speed: 5,
+            shield: false,
+            speedBoost: false,
+            health: 100,
+            color: '#FF0000',
+            hitCooldown: 0,
+            isAlive: true,
+            score: 0,
+            lane: 1 // Middle lane (0, 1, 2)
+        };
+
+        // Power-ups
+        const powerUps = [];
+        const POWER_UP_TYPES = [
+            { type: 'shield', color: 'green', effect: (player) => { player.shield = true; setTimeout(() => player.shield = false, 5000); } },
+            { type: 'speedBoost', color: 'teal', effect: (player) => { 
+                player.speedBoost = true; 
+                player.speed *= 1.5;
+                setTimeout(() => { 
+                    player.speedBoost = false; 
+                    player.speed /= 1.5;
+                }, 5000); 
+            }},
+            { type: 'extraPoints', color: 'yellow', effect: (player) => { player.score += 100; } },
+            { type: 'repair', color: 'lime', effect: (player) => { player.health = Math.min(player.health + 25, 100); } }
+        ];
+
+        // Obstacles, enemies, bullets
+        const obstacles = [];
+        const enemies = [];
+        const bullets = [];
+
+        // Road lane positions
+        const lanes = [200, 400, 600];
+
+        // Damage player function
+        function damagePlayer(player, amount) {
+            if (player.shield) return; // Shield prevents damage
+            if (player.hitCooldown > 0) return; // Prevent multiple hits in same frame
+            if (!player.isAlive) return; // Don't damage dead players
+            
+            console.log(`Player taking ${amount} damage. Health before: ${player.health}`);
+            player.health -= amount;
+            player.hitCooldown = 10; // Set cooldown frames
+            
+            // Visual feedback
+            canvas.style.border = "4px solid red";
+            setTimeout(() => {
+                canvas.style.border = "4px solid #16213e";
+            }, 200);
+            
+            console.log(`Health after: ${player.health}`);
+            if (player.health <= 0) {
+                player.health = 0;
+                player.isAlive = false;
+                
+                // In 2P mode, check if game should end
+                if (game.gameMode === '2P') {
+                    if (!player1.isAlive && !player2.isAlive) {
+                        game.isRunning = false;
+                        game.winner = "Tie!";
+                    } else if (!player1.isAlive) {
+                        game.isRunning = false;
+                        game.winner = "Player 2 Wins!";
+                    } else if (!player2.isAlive) {
+                        game.isRunning = false;
+                        game.winner = "Player 1 Wins!";
+                    }
+                } else {
+                    game.isRunning = false;
+                }
+            }
+        }
+
+        // Create obstacle
+        function createObstacle() {
+            const lane = lanes[Math.floor(Math.random() * lanes.length)];
+            obstacles.push({
+                x: lane - 25, // Center in lane
+                y: -100,
+                width: 50,
+                height: 80,
+                color: 'red',
+                damage: 25 // Damage amount for obstacles
+            });
+        }
+
+        // Create power-up
+        function createPowerUp() {
+            const lane = lanes[Math.floor(Math.random() * lanes.length)];
+            const powerUpType = POWER_UP_TYPES[Math.floor(Math.random() * POWER_UP_TYPES.length)];
+            powerUps.push({
+                x: lane - 20, // Center in lane
+                y: -100,
+                width: 40,
+                height: 40,
+                color: powerUpType.color,
+                type: powerUpType.type
+            });
+        }
+
+        // Create enemy
+        function createEnemy() {
+            const lane = lanes[Math.floor(Math.random() * lanes.length)];
+            enemies.push({
+                x: lane - 30, // Center in lane
+                y: -150,
+                width: 60,
+                height: 100,
+                color: 'purple',
+                health: 3,
+                shootCooldown: 0,
+                shootRate: 60 // Frames between the shots
+            });
+        }
+
+        // Enemy shooting
+        function enemyShoot(enemy) {
+            bullets.push({
+                x: enemy.x + enemy.width / 2,
+                y: enemy.y + enemy.height,
+                width: 10,
+                height: 20,
+                color: 'orange',
+                speed: game.speed + 2,
+                damage: 10 + Math.floor(game.difficulty) * 2 // Damage increases with difficulty
+            });
+        }
+
+        // Draw road
+        function drawRoad() {
+            ctx.fillStyle = 'gray';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Road lane lines
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 5;
+            lanes.forEach(lane => {
+                ctx.beginPath();
+                ctx.moveTo(lane, 0);
+                ctx.lineTo(lane, canvas.height);
+                ctx.stroke();
+            });
+        }
+
+        // Draw player car
+        function drawPlayer(player) {
+            if (!player.isAlive) return; // Don't draw dead players
+            
+            // Indicate shield or speed boost
+            if (player.shield) {
+                ctx.strokeStyle = 'green';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(player.x - 5, player.y - 5, player.width + 10, player.height + 10);
+            }
+            if (player.speedBoost) {
+                ctx.strokeStyle = 'blue';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(player.x - 5, player.y - 5, player.width + 10, player.height + 10);
+            }
+
+            // Draw player car
+            ctx.fillStyle = player.color;
+            ctx.fillRect(player.x, player.y, player.width, player.height);
+            
+            // Draw player health bar
+            ctx.fillStyle = 'red';
+            ctx.fillRect(player.x, player.y - 10, player.width, 5);
+            ctx.fillStyle = 'green';
+            ctx.fillRect(player.x, player.y - 10, (player.health / 100) * player.width, 5);
+            
+            // Draw collision box if debug mode is on
+            if (game.debugMode) {
+                ctx.strokeStyle = 'yellow';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(player.x, player.y, player.width, player.height);
+            }
+        }
+
+        // Draw obstacles
+        function drawObstacles() {
+            obstacles.forEach(obstacle => {
+                ctx.fillStyle = obstacle.color;
+                ctx.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                
+                // Draw collision box if debug mode is on
+                if (game.debugMode) {
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
+                }
+            });
+        }
+
+        // Draw power-ups
+        function drawPowerUps() {
+            powerUps.forEach(powerUp => {
+                ctx.fillStyle = powerUp.color;
+                ctx.fillRect(powerUp.x, powerUp.y, powerUp.width, powerUp.height);
+            });
+        }
+
+        // Draw enemies
+        function drawEnemies() {
+            enemies.forEach(enemy => {
+                // Draw enemy body
+                ctx.fillStyle = enemy.color;
+                ctx.fillRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                
+                // Draw gun barrels
+                ctx.fillStyle = 'black';
+                ctx.fillRect(enemy.x + 10, enemy.y + enemy.height - 10, 10, 15);
+                ctx.fillRect(enemy.x + enemy.width - 20, enemy.y + enemy.height - 10, 10, 15);
+                
+                // Draw health bar
+                ctx.fillStyle = 'red';
+                ctx.fillRect(enemy.x, enemy.y - 10, enemy.width, 5);
+                ctx.fillStyle = 'green';
+                ctx.fillRect(enemy.x, enemy.y - 10, (enemy.health / 3) * enemy.width, 5);
+                
+                // Draw collision box if debug mode is on
+                if (game.debugMode) {
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(enemy.x, enemy.y, enemy.width, enemy.height);
+                }
+            });
+        }
+
+        // Draw bullets
+        function drawBullets() {
+            bullets.forEach(bullet => {
+                // Draw bullet in shape of a gun
+                ctx.fillStyle = bullet.color;
+                
+                // Gun body
+                ctx.fillRect(bullet.x - bullet.width / 2, bullet.y, bullet.width, bullet.height);
+                
+                // Gun handle
+                ctx.fillRect(bullet.x - bullet.width / 2 - 5, bullet.y + 5, 5, 10);
+                
+                // Gun trigger
+                ctx.fillRect(bullet.x - bullet.width / 2 - 2, bullet.y + 15, 3, 3);
+                
+                // Draw collision box if debug mode is on
+                if (game.debugMode) {
+                    ctx.strokeStyle = 'yellow';
+                    ctx.lineWidth = 1;
+                    ctx.strokeRect(bullet.x - bullet.width / 2 - 5, bullet.y, bullet.width + 5, bullet.height);
+                }
+            });
+        }
+
+        // Check for collision between two objects
+        function isColliding(obj1, obj2) {
+            // For bullets, adjust for gun handle
+            let x1 = obj1.x;
+            let w1 = obj1.width;
+            
+            if (obj1.color === 'orange') { // If it's a bullet
+                x1 = obj1.x - obj1.width / 2 - 5;
+                w1 = obj1.width + 5;
+            }
+            
+            return (
+                x1 < obj2.x + obj2.width &&
+                x1 + w1 > obj2.x &&
+                obj1.y < obj2.y + obj2.height &&
+                obj1.y + obj1.height > obj2.y
+            );
+        }
+
+        // Check collision
+        function checkCollision() {
+            // Obstacles collision
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                const obstacle = obstacles[i];
+                
+                // Check collision with player 1
+                if (player1.isAlive && isColliding(obstacle, player1)) {
+                    damagePlayer(player1, obstacle.damage);
+                    obstacles.splice(i, 1);
+                    console.log("Player 1 - Obstacle collision detected! Damage applied.");
+                    continue;
+                }
+                
+                // Check collision with player 2 (in 2P mode)
+                if (game.gameMode === '2P' && player2.isAlive && isColliding(obstacle, player2)) {
+                    damagePlayer(player2, obstacle.damage);
+                    obstacles.splice(i, 1);
+                    console.log("Player 2 - Obstacle collision detected! Damage applied.");
+                }
+            }
+
+            // Power-up collection
+            for (let i = powerUps.length - 1; i >= 0; i--) {
+                const powerUp = powerUps[i];
+                const selectedPowerUp = POWER_UP_TYPES.find(p => p.type === powerUp.type);
+                
+                // Check player 1 collision with power-up
+                if (player1.isAlive && isColliding(powerUp, player1)) {
+                    if (selectedPowerUp) {
+                        selectedPowerUp.effect(player1);
+                        console.log(`Player 1 - Power-up collected: ${powerUp.type}`);
+                    }
+                    powerUps.splice(i, 1);
+                    continue;
+                }
+                
+                // Check player 2 collision with power-up (in 2P mode)
+                if (game.gameMode === '2P' && player2.isAlive && isColliding(powerUp, player2)) {
+                    if (selectedPowerUp) {
+                        selectedPowerUp.effect(player2);
+                        console.log(`Player 2 - Power-up collected: ${powerUp.type}`);
+                    }
+                    powerUps.splice(i, 1);
+                }
+            }
+
+            // Bullet collision with players
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                const bullet = bullets[i];
+                
+                // Check bullet collision with player 1
+                if (player1.isAlive && isColliding(bullet, player1)) {
+                    damagePlayer(player1, bullet.damage);
+                    bullets.splice(i, 1);
+                    console.log("Player 1 - Bullet collision detected! Damage applied.");
+                    continue;
+                }
+                
+                // Check bullet collision with player 2 (in 2P mode)
+                if (game.gameMode === '2P' && player2.isAlive && isColliding(bullet, player2)) {
+                    damagePlayer(player2, bullet.damage);
+                    bullets.splice(i, 1);
+                    console.log("Player 2 - Bullet collision detected! Damage applied.");
+                }
+            }
+
+            // Check if players passed enemies (counts as defeating them)
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                
+                // Check if either player passed an enemy
+                if ((player1.isAlive && enemy.y > player1.y + player1.height) || 
+                    (game.gameMode === '2P' && player2.isAlive && enemy.y > player2.y + player2.height)) {
+                    enemies.splice(i, 1);
+                    
+                    // Award points to living players
+                    if (player1.isAlive) player1.score += 50;
+                    if (game.gameMode === '2P' && player2.isAlive) player2.score += 50;
+                }
+            }
+        }
+
+        // Update game state
+        function update() {
+            // Decrement hit cooldown for players
+            if (player1.hitCooldown > 0) {
+                player1.hitCooldown--;
+            }
+            if (game.gameMode === '2P' && player2.hitCooldown > 0) {
+                player2.hitCooldown--;
+            }
+            
+            // Move obstacles
+            for (let i = obstacles.length - 1; i >= 0; i--) {
+                obstacles[i].y += game.speed;
+                if (obstacles[i].y > canvas.height) {
+                    obstacles.splice(i, 1);
+                }
+            }
+
+            // Move power-ups
+            for (let i = powerUps.length - 1; i >= 0; i--) {
+                powerUps[i].y += game.speed;
+                if (powerUps[i].y > canvas.height) {
+                    powerUps.splice(i, 1);
+                }
+            }
+
+            // Move and update enemies
+            for (let i = enemies.length - 1; i >= 0; i--) {
+                const enemy = enemies[i];
+                enemy.y += game.speed * 0.7; // Enemies move slower than obstacles
+                
+                // Enemy shooting logic
+                enemy.shootCooldown++;
+                if (enemy.shootCooldown >= enemy.shootRate) {
+                    enemyShoot(enemy);
+                    enemy.shootCooldown = 0;
+                }
+                
+                if (enemy.y > canvas.height) {
+                    enemies.splice(i, 1);
+                }
+            }
+
+            // Move bullets
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                bullets[i].y += bullets[i].speed;
+                if (bullets[i].y > canvas.height) {
+                    bullets.splice(i, 1);
+                }
+            }
+
+            // Spawn new obstacles and power-ups
+            if (Math.random() < 0.02) {
+                createObstacle();
+            }
+            if (Math.random() < 0.01) {
+                createPowerUp();
+            }
+
+            // Spawn enemies at score milestones (every 100 points)
+            const currentScoreHundred = Math.floor(Math.max(player1.score, game.gameMode === '2P' ? player2.score : 0) / 100);
+            if (currentScoreHundred > game.lastEnemySpawn) {
+                createEnemy();
+                game.lastEnemySpawn = currentScoreHundred;
+            }
+
+            // Increase difficulty over time
+            if (game.score % 100 === 0 && game.score > 0) {
+                game.difficulty += 0.1;
+                game.speed += 0.1;
+            }
+
+            // Check collision
+            checkCollision();
+
+            // Increment scores for living players
+            if (player1.isAlive) player1.score += 0.1;
+            if (game.gameMode === '2P' && player2.isAlive) player2.score += 0.1;
+            
+            // Update overall game score (for difficulty scaling)
+            game.score = Math.max(player1.score, game.gameMode === '2P' ? player2.score : 0);
+        }
+
+        // Position players in their lanes
+        function positionPlayers() {
+            // Position player 1
+            player1.x = lanes[player1.lane] - player1.width/2;
+            
+            // Position player 2 (in 2P mode)
+            if (game.gameMode === '2P') {
+                player2.x = lanes[player2.lane] - player2.width/2;
+            }
+        }
+
+        // Game loop
+        function gameLoop() {
+            if (!game.isRunning) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'white';
+                ctx.font = '30px Arial';
+                
+                if (game.gameMode === '2P' && game.winner) {
+                    // Show winner in 2P mode
+                    ctx.fillText(game.winner, 300, 250);
+                    ctx.fillText(`Player 1 Score: ${Math.floor(player1.score)}`, 300, 300);
+                    ctx.fillText(`Player 2 Score: ${Math.floor(player2.score)}`, 300, 350);
+                } else {
+                    // Show game over in 1P mode
+                    ctx.fillText(`Game Over! Score: ${Math.floor(player1.score)}`, 200, 300);
+                }
+                return;
+            }
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            drawRoad();
+            drawPlayer(player1);
+            if (game.gameMode === '2P') {
+                drawPlayer(player2);
+            }
+            drawObstacles();
+            drawPowerUps();
+            drawEnemies();
+            drawBullets();
+            update();
+
+            // Draw scores and health
+            ctx.fillStyle = 'white';
+            ctx.font = '20px Arial';
+            
+            if (game.gameMode === '1P') {
+                ctx.fillText(`Score: ${Math.floor(player1.score)}`, 10, 30);
+                ctx.fillText(`Health: ${Math.floor(player1.health)}`, 10, 60);
+            } else {
+                // 2P mode scores
+                ctx.fillText(`P1 Score: ${Math.floor(player1.score)}`, 10, 30);
+                ctx.fillText(`P1 Health: ${Math.floor(player1.health)}`, 10, 60);
+                ctx.fillText(`P2 Score: ${Math.floor(player2.score)}`, canvas.width - 150, 30);
+                ctx.fillText(`P2 Health: ${Math.floor(player2.health)}`, canvas.width - 150, 60);
+            }
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        // Setup UI navigation
+        document.getElementById('onePlayerButton').addEventListener('click', () => {
+            document.getElementById('modeSelection').style.display = 'none';
+            document.getElementById('onePlayerSetup').style.display = 'block';
+        });
+
+        document.getElementById('twoPlayerButton').addEventListener('click', () => {
+            document.getElementById('modeSelection').style.display = 'none';
+            document.getElementById('twoPlayerSetup').style.display = 'block';
+        });
+
+        document.getElementById('backButton1').addEventListener('click', () => {
+            document.getElementById('modeSelection').style.display = 'block';
+            document.getElementById('onePlayerSetup').style.display = 'none';
+        });
+
+        document.getElementById('backButton2').addEventListener('click', () => {
+            document.getElementById('modeSelection').style.display = 'block';
+            document.getElementById('twoPlayerSetup').style.display = 'none';
+        });
+
+        // Start 1-player game
+        document.getElementById('startOnePlayerButton').addEventListener('click', () => {
+            // Set player car color based on color picker selection
+            player1.color = document.getElementById('player1ColorPicker').value;
+            game.gameMode = '1P';
+            
+            // Position player in middle lane
+            player1.lane = 1;
+            positionPlayers();
+            
+            document.getElementById('startScreen').style.display = 'none';
+            gameLoop();
+        });
+
+        // Start 2-player game
+        document.getElementById('startTwoPlayerButton').addEventListener('click', () => {
+            // Set player car colors
+            player1.color = document.getElementById('player1ColorPicker2P').value;
+            player2.color = document.getElementById('player2ColorPicker').value;
+            game.gameMode = '2P';
+            
+            // Position players in different lanes
+            player1.lane = 0; // Left lane
+            player2.lane = 2; // Right lane
+            positionPlayers();
+            
+            document.getElementById('startScreen').style.display = 'none';
+            gameLoop();
+        });
+
+        // Player controls
+        document.addEventListener('keydown', (e) => {
+            // Player 1 controls (Arrow keys)
+            if (e.key === 'ArrowLeft' && player1.isAlive) {
+                if (player1.lane > 0) {
+                    player1.lane--;
+                    positionPlayers();
+                }
+            }
+            if (e.key === 'ArrowRight' && player1.isAlive) {
+                if (player1.lane < 2) {
+                    player1.lane++;
+                    positionPlayers();
+                }
+            }
+            
+            // Player 2 controls (A and D keys)
+            if (game.gameMode === '2P') {
+                if ((e.key === 'a' || e.key === 'A') && player2.isAlive) {
+                    if (player2.lane > 0) {
+                        player2.lane--;
+                        positionPlayers();
+                    }
+                }
+                if ((e.key === 'd' || e.key === 'D') && player2.isAlive) {
+                    if (player2.lane < 2) {
+                        player2.lane++;
+                        positionPlayers();
+                    }
+                }
+            }
+            
+            // Debug mode toggle
+            if (e.key === 'b' && e.altKey) {
+                game.debugMode = !game.debugMode;
+                console.log("Debug mode: " + (game.debugMode ? "ON" : "OFF"));
+            }
+        });
+    </script>
+</body>
+</html>
